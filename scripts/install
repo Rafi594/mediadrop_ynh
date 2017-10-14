@@ -142,6 +142,7 @@ sudo bash -c "source ${final_path}/venv/bin/activate && paster make-config Media
 
 # Create a dedicated systemd config
 ynh_systemd_config
+
 # Add uwsgi into deployment.ini (end of file)
 sudo su -c "cat ../conf/uwsgi >> ${final_path}/deployment.ini"
 
@@ -149,9 +150,7 @@ sudo su -c "cat ../conf/uwsgi >> ${final_path}/deployment.ini"
 sudo cp ../conf/mediadrop.uwsgi.service /etc/systemd/system/mediadrop.uwsgi.service
 sudo chown root: /etc/systemd/system/mediadrop.uwsgi.service
 sudo sed -i "s@__FINALPATH__@$final_path/@g" /etc/systemd/system/mediadrop.uwsgi.service
-sudo cp ../conf/mediadrop.service /etc/systemd/system/mediadrop.service
-sudo chown root: /etc/systemd/system/mediadrop.service
-sudo sed -i "s@__FINALPATH__@$final_path/@g" /etc/systemd/system/mediadrop.service
+
 
 # Setup Mediadrop
 sudo bash -c "source ${final_path}/venv/bin/activate && paster setup-app ${final_path}/deployment.ini"
