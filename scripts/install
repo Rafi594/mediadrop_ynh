@@ -1,69 +1,121 @@
 #!/bin/bash
 
-# Exit on command errors and treat unset variables as an error
-set -eu
+#=================================================
+# GENERIC START
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
 
-source .fonctions	# Loads the generic functions usually used in the script
-source /usr/share/yunohost/helpers # Source app helpers
+source _common.sh
+source /usr/share/yunohost/helpers
 
-CLEAN_SETUP () {
-	# Clean installation residues that are not supported by the remove script.
-	# Clean hosts
-	sudo sed -i '/#MEDIADROP/d' /etc/hosts
-}
-TRAP_ON	# Active trap to stop the script if an error is detected.
+#=================================================
+# MANAGE SCRIPT FAILURE
+#=================================================
+
+# Exit if an error occurs during the execution of the script
+ynh_abort_if_errors
+
+#=================================================
+# RETRIEVE ARGUMENTS FROM THE MANIFEST
+#=================================================
+
 
 domain=$YNH_APP_ARG_DOMAIN
 path=$YNH_APP_ARG_PATH
 admin_mediadrop=$YNH_APP_ARG_ADMIN
 is_public=$YNH_APP_ARG_IS_PUBLIC
+path_url=""
 
+# This is a multi-instance app, meaning it can be installed several times independently
+# The id of the app as stated in the manifest is available as $YNH_APP_ID
+# The instance number is available as $YNH_APP_INSTANCE_NUMBER (equals "1", "2", ...)
+# The app instance name is available as $YNH_APP_INSTANCE_NAME
+#    - the first time the app is installed, YNH_APP_INSTANCE_NAME = ynhexample
+#    - the second time the app is installed, YNH_APP_INSTANCE_NAME = ynhexample__2
+#    - ynhexample__{N} for the subsequent installations, with N=3,4, ...
+# The app instance name is probably what you are interested the most, since this is
+# guaranteed to be unique. This is a good unique identifier to define installation path,
+# db names, ...
 app=$YNH_APP_INSTANCE_NAME
 
-CHECK_VAR "$app" "app name not set"
+#=================================================
+# CHECK IF THE APP CAN BE INSTALLED WITH THESE ARGS
+#=================================================
 
-CHECK_USER "$admin_mediadrop"
+final_path=/var/www/$app
+test ! -e "$final_path" || ynh_die "This path already contains a folder"
 
-CHECK_PATH
+# Normalize the url path syntax
+path_url=$(ynh_normalize_url_path $path_url)
 
-CHECK_DOMAINPATH
+# Check web path availability
+ynh_webpath_available $domain $path_url
+# Register (book) web path
+ynh_webpath_register $app $domain $path_url
 
-CHECK_FINALPATH
-
-FIND_PORT 8081	# Check port availability
+#=================================================
+# STORE SETTINGS FROM MANIFEST
+#=================================================
 
 ynh_app_setting_set $app domain $domain
-ynh_app_setting_set $app path $path
+ynh_app_setting_set $app path $path_url
 ynh_app_setting_set $app admin $admin_mediadrop
 ynh_app_setting_set $app is_public $is_public
 
-# Install python-virtualenv and all dependencies
-sudo apt-get update
-sudo apt-get -y install libjpeg-dev zlib1g-dev libfreetype6-dev libmysqlclient-dev
-sudo apt-get -y install python-setuptools python-virtualenv python-dev python-pip
+#=================================================
+# STANDARD MODIFICATIONS
+#=================================================
+# FIND AND OPEN A PORT
+#=================================================
 
-GENERATE_DB $app	# Create a database and a dedicated user in the app name
+# Find a free port
+port=$(ynh_find_port 8081)
+# Open this port
+yunohost firewall allow --no-upnp TCP $port 2>&1
+ynh_app_setting_set $app port $port
 
-# Creates the destination directory and stores its location.
-sudo mkdir -p "$final_path/venv"
+#=================================================
+# INSTALL DEPENDENCIES
+#=================================================
+
+ynh_install_app_dependencies install libjpeg-dev zlib1g-dev libfreetype6-dev libmysqlclient-dev python-setuptools python-virtualenv python-dev python-pip
+#=================================================
+# CREATE A MYSQL DATABASE
+#=================================================
+# If your app uses a MySQL database, you can use these lines to bootstrap
+# a database, an associated user and save the password in app settings
+
+db_name=$(ynh_sanitize_dbid $app)
+ynh_app_setting_set $app db_name $db_name
+ynh_mysql_setup_db $db_name $db_name
+
+#=================================================
+# DOWNLOAD, CHECK AND UNPACK SOURCE
+#=================================================
+
 ynh_app_setting_set $app final_path $final_path
-# Create user
-sudo useradd -N $app -d $final_path
+# Download, check integrity, uncompress and patch the source from app.src
+ynh_setup_source "$final_path"
 
-# Get source
-SETUP_SOURCE
+#=================================================
+# NGINX CONFIGURATION
+#=================================================
 
-# Copy nginx configuration
-sudo cp ../conf/nginx.conf /etc/nginx/conf.d/$domain.d/$app.conf
+# Create a dedicated nginx config
+ynh_add_nginx_config
 
-# Modif the variables in the nginx configuration file
-sudo sed -i "s@__PATHTOCHANGE__@$path@g" /etc/nginx/conf.d/$domain.d/$app.conf
-sudo sed -i "s@__FINALPATH__@$final_path@g" /etc/nginx/conf.d/$domain.d/$app.conf
+#=================================================
+# CREATE DEDICATED USER
+#=================================================
 
-if [ "$is_public" = "Yes" ];
-then
-	sudo sed -i "s@#--PRIVATE--@@g" /etc/nginx/conf.d/$domain.d/$app.conf
-fi
+# Create a system user
+ynh_system_user_create $app
+
+
+#=================================================
+# SPECIFIC SETUP
+#=================================================
 
 # Set permissions mediadrop directory
 sudo chown -R $app: $final_path
@@ -83,25 +135,13 @@ sudo bash -c "source ${final_path}/venv/bin/activate && pip install uwsgi && pyt
 # To create deployment.ini in your current dir
 sudo bash -c "source ${final_path}/venv/bin/activate && paster make-config MediaDrop ${final_path}/deployment.ini"
 
-# Adapt config Mediadrop
-sudo sed -i 's,host = 0.0.0.0,host = 127.0.0.1,'  $final_path/deployment.ini
-sudo sed -i 's,port = 8080,port = '${port}','  $final_path/deployment.ini
-sudo sed -i 's,email_to = you@yourdomain.com,email_to = '${admin_mediadrop}'@'${domain}',' $final_path/deployment.ini
-sudo sed -i 's,error_email_from = paste@localhost,error_email_from = '${admin_mediadrop}'@'${domain}',' $final_path/deployment.ini
-sudo sed -i 's,mysql://username:pass@localhost/dbname?charset=utf8\&use_unicode=0,mysql://'${db_user}':'${db_pwd}'@localhost/'${db_user}'?charset=utf8\&use_unicode=0,' $final_path/deployment.ini
-sudo sed -i 's,file_serve_method = default,file_serve_method = nginx_redirect,' $final_path/deployment.ini
-sudo sed -i 's,# nginx_serve_path = __mediadrop_serve__,nginx_serve_path = __mediadrop_serve__,' $final_path/deployment.ini
-sudo sed -i 's,static_files = true,static_files = false,' $final_path/deployment.ini
-sudo sed -i 's,enable_gzip = true,enable_gzip = false,' $final_path/deployment.ini
-sudo sed -i 's,static_files = false,static_files = true,' $final_path/deployment.ini
-sudo sed -i "s,cache_dir = %(here)s/data,cache_dir = $final_path/data/," $final_path/deployment.ini
-sudo sed -i "s,image_dir = %(here)s/data/images,image_dir = $final_path/data/images/," $final_path/deployment.ini
-sudo sed -i "s,media_dir = %(here)s/data/media,media_dir = $final_path/data/media/," $final_path/deployment.ini
-sudo sed -i 's,sqlalchemy.pool_recycle = 3600,sqlalchemy.pool_recycle = 200,' $final_path/deployment.ini
 
-# Move to script folder
-popd
+#=================================================
+# SETUP SYSTEMD
+#=================================================
 
+# Create a dedicated systemd config
+ynh_systemd_config
 # Add uwsgi into deployment.ini (end of file)
 sudo su -c "cat ../conf/uwsgi >> ${final_path}/deployment.ini"
 
@@ -121,31 +161,89 @@ sudo mysql -u $db_user -p$db_pwd $app < "${final_path}/setup_triggers.sql"
 
 echo -e "127.0.0.1 $domain #MEDIADROP" | sudo tee -a /etc/hosts
 
-# Set ssowat config
-if [[ $is_public -eq 0 ]]; then
-	ynh_app_setting_delete $app unprotected_uris
-	sudo yunohost app ssowatconf
-fi
+#=================================================
+# SETUP APPLICATION WITH CURL
+#=================================================
 
-sudo systemctl daemon-reload
+# Set right permissions for curl install
+chown -R $app: $final_path
 
-# Start mediadrop
-sudo systemctl start mediadrop.service
-sudo systemctl enable mediadrop.service
-
-# Start uwsgi
-sudo systemctl start mediadrop.uwsgi.service
-sudo systemctl enable mediadrop.uwsgi.service
-
-# Add uwsgi & mediadrop as a service
-sudo yunohost service add mediadrop.uwsgi
-sudo yunohost service add mediadrop
-
-sudo rm -fr /root/.python-eggs
+# Set the app as temporarily public for curl call
+ynh_app_setting_set $app skipped_uris "/"
+# Reload SSOwat config
+yunohost app ssowatconf
 
 # Reload Nginx
-sudo systemctl reload nginx
-sudo systemctl reload mysql
+systemctl reload nginx
 
+# Installation with curl
+ynh_local_curl "/INSTALL_PATH" "key1=value1" "key2=value2" "key3=value3"
+
+#=================================================
+# MODIFY A CONFIG FILE
+#=================================================
+sudo sed -i 's,host = 0.0.0.0,host = 127.0.0.1,'  $final_path/deployment.ini
+sudo sed -i 's,port = 8080,port = '${port}','  $final_path/deployment.ini
+sudo sed -i 's,email_to = you@yourdomain.com,email_to = '${admin_mediadrop}'@'${domain}',' $final_path/deployment.ini
+sudo sed -i 's,error_email_from = paste@localhost,error_email_from = '${admin_mediadrop}'@'${domain}',' $final_path/deployment.ini
+sudo sed -i 's,mysql://username:pass@localhost/dbname?charset=utf8\&use_unicode=0,mysql://'${db_user}':'${db_pwd}'@localhost/'${db_user}'?charset=utf8\&use_unicode=0,' $final_path/deployment.ini
+sudo sed -i 's,file_serve_method = default,file_serve_method = nginx_redirect,' $final_path/deployment.ini
+sudo sed -i 's,# nginx_serve_path = __mediadrop_serve__,nginx_serve_path = __mediadrop_serve__,' $final_path/deployment.ini
+sudo sed -i 's,static_files = true,static_files = false,' $final_path/deployment.ini
+sudo sed -i 's,enable_gzip = true,enable_gzip = false,' $final_path/deployment.ini
+sudo sed -i 's,static_files = false,static_files = true,' $final_path/deployment.ini
+sudo sed -i "s,cache_dir = %(here)s/data,cache_dir = $final_path/data/," $final_path/deployment.ini
+sudo sed -i "s,image_dir = %(here)s/data/images,image_dir = $final_path/data/images/," $final_path/deployment.ini
+sudo sed -i "s,media_dir = %(here)s/data/media,media_dir = $final_path/data/media/," $final_path/deployment.ini
+sudo sed -i 's,sqlalchemy.pool_recycle = 3600,sqlalchemy.pool_recycle = 200,' $final_path/deployment.ini
+#=================================================
+# STORE THE CHECKSUM OF THE CONFIG FILE
+#=================================================
+
+# Calculate and store the config file checksum into the app settings
+ynh_store_file_checksum "$final_path/deployment.ini"
+
+#=================================================
+# GENERIC FINALIZATION
+#=================================================
+# SECURE FILES AND DIRECTORIES
+#=================================================
+
+# Set permissions to app files
+chown -R root: $final_path
+
+#=================================================
+# SETUP LOGROTATE
+#=================================================
+
+# Use logrotate to manage application logfile(s)
+ynh_use_logrotate
+
+#=================================================
+# ADVERTISE SERVICE IN ADMIN PANEL
+#=================================================
+
+yunohost service add mediadrop --log "/var/log/mediadrop.log"
+
+#=================================================
+# SETUP SSOWAT
+#=================================================
+
+if [ $is_public -eq 0 ]
+then	# Remove the public access
+	ynh_app_setting_delete $app skipped_uris
+fi
+# Make app public if necessary
+if [ $is_public -eq 1 ]
+then
+	# unprotected_uris allows SSO credentials to be passed anyway.
+	ynh_app_setting_set $app unprotected_uris "/"
+fi
+
+#=================================================
+# RELOAD NGINX
+#=================================================
+
+systemctl reload nginx
 # clean hosts
 sudo sed -i '/#MEDIADROP/d' /etc/hosts
