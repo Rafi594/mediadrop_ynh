@@ -22,10 +22,9 @@ ynh_abort_if_errors
 
 
 domain=$YNH_APP_ARG_DOMAIN
-path=$YNH_APP_ARG_PATH
+path_url=$YNH_APP_ARG_PATH
 admin_mediadrop=$YNH_APP_ARG_ADMIN
 is_public=$YNH_APP_ARG_IS_PUBLIC
-path_url=""
 
 # This is a multi-instance app, meaning it can be installed several times independently
 # The id of the app as stated in the manifest is available as $YNH_APP_ID
@@ -59,7 +58,7 @@ ynh_webpath_register $app $domain $path_url
 #=================================================
 
 ynh_app_setting_set $app domain $domain
-ynh_app_setting_set $app path $path_url
+ynh_app_setting_set $app path $path
 ynh_app_setting_set $app admin $admin_mediadrop
 ynh_app_setting_set $app is_public $is_public
 
