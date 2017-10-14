@@ -1,0 +1,6 @@
+SOURCE_URL=https://github.com/mediadrop/mediadrop/archive/master.zip
+SOURCE_SUM=58bde7d257f0fa5caf69a8df2897e7d5
+SOURCE_SUM_PRG=md5sum
+SOURCE_FORMAT=zip
+SOURCE_IN_SUBDIR=true
+SOURCE_FILENAME=
